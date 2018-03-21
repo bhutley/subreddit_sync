@@ -18,14 +18,14 @@ valid_time_options = ['all', 'year', 'month', 'week', 'day', 'hour', ]
 
 optp = OptionParser()
 optp.add_option("-c", "--config", dest="config_file", metavar="FILE",
-                default= os.path.join(os.path.expanduser("~"), ".reddit.cfg"),
+                default=os.path.join(os.path.expanduser("~"), ".reddit.cfg"),
                 help="Reddit configuration file")
-optp.add_option("-n", "--name", dest="name", 
+optp.add_option("-n", "--name", dest="name",
                 default="brettbot",
                 help="Bot Name")
 optp.add_option("-l", "--limit", dest="limit", type="string",
                 default="day",
-                help="Submission time limit (%s)" % (",".join(valid_time_options), ))
+                help="Submission time limit (%s)" % (",".join(valid_time_options),))
 optp.add_option("-s", "--subreddit", dest="subreddit", type="string",
                 default=None,
                 help="Subreddit name")
@@ -35,15 +35,20 @@ optp.add_option("-d", "--database", dest="database", type="string",
 optp.add_option("-i", "--sb_id", dest="subid", type="string",
                 default=None,
                 help="Get a particular submission")
+optp.add_option("-X", "--no-comments", dest="no_comments",
+                action="store_true", default=False,
+                help="Don't save comments")
+optp.add_option("-C", "--commit", dest="commit",
+                action="store_true", default=False,
+                help="Commit after insert")
+optp.add_option("-S", "--list-subscribed", dest="list_subscribed",
+                action="store_true", default=False,
+                help="List all subscribed subreddits")
 
 opts, args = optp.parse_args()
 
 if not os.path.exists(opts.config_file):
     print("config file '%s' doesn't exist" % opts.config_file)
-    exit(1)
-
-if not opts.subreddit or len(opts.subreddit) == 0:
-    print("A subreddit must be specified")
     exit(1)
 
 if opts.limit not in valid_time_options:
@@ -55,6 +60,21 @@ config_parser.read(opts.config_file)
 
 client_id = config_parser.get(opts.name, 'client_id')
 client_secret = config_parser.get(opts.name, 'client_secret')
+
+reddit = praw.Reddit(
+    client_id=client_id,
+    client_secret=client_secret,
+    user_agent='test script'
+)
+if opts.list_subscribed:
+    for subreddit in reddit.user.me().subreddits():
+        print(str(subreddit))
+    exit(0)
+
+if not opts.subreddit or len(opts.subreddit) == 0:
+    print("A subreddit must be specified")
+    exit(1)
+
 
 create_db = False
 if not os.path.isfile(opts.database):
@@ -69,7 +89,6 @@ if create_db:
     c.execute('''CREATE INDEX x_comment_sb_id ON comment(sb_id)''')
     conn.commit()
 
-reddit = praw.Reddit(client_id=client_id, client_secret=client_secret, user_agent='test script')
 sr = reddit.subreddit(opts.subreddit)
 sr_name = str(sr.name)
 
@@ -79,6 +98,7 @@ c = conn.cursor()
 all_sub_ids = {}
 for row in c.execute('''SELECT sb_id, num_comments from submission WHERE sr_name=?;''', (sr_name, )):
     all_sub_ids[row[0]] = int(row[1])
+
 
 def save_submission(post):
     sub_id = post.id
@@ -94,12 +114,20 @@ def save_submission(post):
         selftext = post.selftext
         num_comments = int(post.num_comments)
         c.execute('''INSERT INTO submission(sb_id, sr_name, author_name, created_utc, title, permalink, url, selftext, num_comments) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)''', (sub_id, sr_name, author_name, created_utc, title, permalink, url, selftext, num_comments ))
+        if opts.commit:
+            conn.commit()
     else:
         num_comments_stored = all_sub_ids[sub_id]
-        
+
     num_comments = int(post.num_comments)
     if num_comments_stored != num_comments:
         c.execute('''UPDATE submission SET num_comments=? WHERE sb_id=?''', (num_comments, sub_id))
+        if opts.commit:
+            conn.commit()
+
+        if opts.no_comments:
+            return
+        
         all_comm_ids = set()
         for row in c.execute("SELECT cm_id FROM comment WHERE sb_id=?", ( sub_id, )):
             all_comm_ids.add(row[0])
@@ -115,8 +143,8 @@ def save_submission(post):
             body = comment.body
 
             if comm_id not in all_comm_ids:
-                c.execute('''INSERT INTO comment(cm_id, sb_id, parent_id, author_name, created_utc, body, permalink) VALUES (?, ?, ?, ?, ?, ?, ?)''', (
-                    comm_id, sub_id, parent_id, author_name, created_utc, body, permalink))
+                c.execute('''INSERT INTO comment(cm_id, sb_id, parent_id, author_name, created_utc, body, permalink) VALUES (?, ?, ?, ?, ?, ?, ?)''', (comm_id, sub_id, parent_id, author_name, created_utc, body, permalink))
+
 
 if save_sub_id is None or len(save_sub_id) == 0:
     submissions = sr.top(opts.limit)
@@ -125,6 +153,5 @@ if save_sub_id is None or len(save_sub_id) == 0:
 else:
     post = reddit.submission(id=save_sub_id)
     save_submission(post)
-    
-conn.commit()
 
+conn.commit()
